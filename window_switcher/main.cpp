@@ -240,9 +240,9 @@ LRESULT MessageWindowProc(
     {
         if (LOWORD(lParam) == WM_CONTEXTMENU)
         {
-            // SetForegroundWindow is necessary to before calling TrackPopupMenu.
-            // Otherwise the menu won't be dimissed by clicking away.
-            // See remarks section of https://msdn.microsoft.com/en-us/library/windows/desktop/ms648002(v=vs.85).aspx
+            // SetForegroundWindow and PostMessage(WM_NULL) are necessary to before/after calling TrackPopupMenu.
+            // Otherwise the menu won't be dimissed by clicking away, or it won't show when right-clicking twice.
+            // See Remarks section of https://msdn.microsoft.com/en-us/library/windows/desktop/ms648002(v=vs.85).aspx
             SetForegroundWindow(hWnd);
             TrackPopupMenuEx(
                 g_notify_icon_context_menu,
@@ -251,6 +251,8 @@ LRESULT MessageWindowProc(
                 GET_Y_LPARAM(wParam),
                 hWnd,
                 nullptr /*lptpm*/);
+
+            PostMessage(hWnd, WM_NULL, 0, 0);
         }
     }
     else if (msg == WM_COMMAND)
