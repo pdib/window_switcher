@@ -5,6 +5,7 @@
 #include <Psapi.h>
 #include <bitset>
 #include <iostream>
+#include <thread>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -16,6 +17,7 @@ constexpr unsigned int c_NOTIFY_ICON_MESSAGE = WM_APP + 0x0001;
 constexpr unsigned int c_MENU_ITEM_QUIT = 0x0001;
 
 HMENU g_notify_icon_context_menu = nullptr;
+HWND g_edit_hwnd = nullptr;
 
 struct get_visible_windows_data
 {
@@ -202,7 +204,7 @@ NotifyIconPtr CreateNotifyIcon(HWND message_window)
     NOTIFYICONDATA& icon_data = *icon_data_ptr;
     icon_data.cbSize = sizeof(NOTIFYICONDATA);
     icon_data.uFlags = NIF_ICON | NIF_TIP | NIF_SHOWTIP | NIF_MESSAGE;
-    icon_data.uID = 0; // We only have  single NotifyIcon, hardcoded id 0 should be enough.
+    icon_data.uID = 0; // We only have single NotifyIcon, hardcoded id 0 should be enough.
     icon_data.uCallbackMessage = c_NOTIFY_ICON_MESSAGE;
     icon_data.hIcon = LoadIcon(nullptr, IDI_QUESTION);
     // This text will be shown as the icon's tooltip.
@@ -224,6 +226,26 @@ NotifyIconPtr CreateNotifyIcon(HWND message_window)
     return icon_data_ptr;
 }
 
+void RunThreadMessageLoop()
+{
+    bool isRunning = true;
+    while (isRunning)
+    {
+        MSG message;
+        // Deliberately listen to all messages destined to the thread. Not only a specific window's messages.
+        if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (message.message == WM_QUIT)
+            {
+                isRunning = false;
+            }
+
+            TranslateMessage(&message);
+            DispatchMessage(&message);
+        }
+    }
+}
+
 LRESULT MessageWindowProc(
     _In_ HWND hWnd,
     _In_ UINT msg,
@@ -234,6 +256,28 @@ LRESULT MessageWindowProc(
     {
         if (HIWORD(lParam) == 0x5A && LOWORD(lParam) == (MOD_WIN | MOD_ALT))
         {
+            if (g_edit_hwnd)
+            {
+                DestroyWindow(g_edit_hwnd);
+            }
+
+            g_edit_hwnd = CreateWindow(
+                "Edit",
+                "",
+                WS_VISIBLE | ES_LEFT | WS_BORDER | WS_POPUPWINDOW,
+                100,
+                150,
+                350,
+                20,
+                hWnd,
+                nullptr,
+                nullptr,
+                nullptr);
+
+            SetFocus(g_edit_hwnd);
+            SetForegroundWindow(g_edit_hwnd);
+
+            return 0;
         }
     }
     else if (msg == c_NOTIFY_ICON_MESSAGE)
@@ -253,22 +297,38 @@ LRESULT MessageWindowProc(
                 nullptr /*lptpm*/);
 
             PostMessage(hWnd, WM_NULL, 0, 0);
+
+            return 0;
         }
     }
     else if (msg == WM_COMMAND)
     {
-        if (LOWORD(wParam) == c_MENU_ITEM_QUIT)
+        if (lParam != 0 && (HWND)lParam == g_edit_hwnd)
         {
-            // Exit the application. Will exit the message loop.
-            PostQuitMessage(0);
+            // Edit control notifications.
+            if (HIWORD(wParam) == EN_KILLFOCUS)
+            {
+                DestroyWindow(g_edit_hwnd);
+                g_edit_hwnd = nullptr;
+            }
         }
+        else if (HIWORD(wParam) == 0)
+        {
+            // Notifications from the NotifyIcon menu.
+            if (LOWORD(wParam) == c_MENU_ITEM_QUIT)
+            {
+                // Exit the application. Will exit the message loop.
+                PostQuitMessage(0);
+            }
+        }
+        return DefWindowProc(hWnd, msg, wParam, lParam);
     }
     else
     {
         return DefWindowProc(hWnd, msg, wParam, lParam);
     }
 
-    return lParam;
+    return 0;
 }
 
 int __stdcall WinMain(
@@ -277,13 +337,13 @@ int __stdcall WinMain(
     LPSTR lpCmdLine,
     int nCmdShow)
 {
-    WNDCLASSEX wndClass = {};
-    wndClass.cbSize = sizeof(WNDCLASSEX);
-    wndClass.lpfnWndProc = MessageWindowProc;
-    wndClass.hInstance = hInstance;
-    wndClass.lpszClassName = "window_switcher_wndclass";
+    WNDCLASSEX wnd_class = {};
+    wnd_class.cbSize = sizeof(WNDCLASSEX);
+    wnd_class.lpfnWndProc = MessageWindowProc;
+    wnd_class.hInstance = hInstance;
+    wnd_class.lpszClassName = "window_switcher_wndclass";
 
-    if (!RegisterClassEx(&wndClass))
+    if (!RegisterClassEx(&wnd_class))
     {
         return GetLastError();
     }
@@ -300,14 +360,14 @@ int __stdcall WinMain(
 
     HWND message_window = CreateWindowEx(
         0 /*dwExStyle*/,
-        wndClass.lpszClassName,
+        wnd_class.lpszClassName,
         nullptr,
         0 /*dwStyle*/,
         0 /*x*/,
         0 /*y*/,
         0 /*nWidth*/,
         0 /*nHeight*/,
-        HWND_MESSAGE,
+        HWND_MESSAGE /*hwndParent*/,
         g_notify_icon_context_menu /*menu*/,
         hInstance,
         nullptr /*lparam*/);
@@ -323,21 +383,7 @@ int __stdcall WinMain(
         return GetLastError();
     }
 
-    bool isRunning = true;
-    while (isRunning)
-    {
-        MSG message;
-        if (PeekMessage(&message, message_window, 0, 0, PM_REMOVE))
-        {
-            if (message.message == WM_QUIT)
-            {
-                isRunning = false;
-            }
-
-            TranslateMessage(&message);
-            DispatchMessage(&message);
-        }
-    }
+    RunThreadMessageLoop();
 
     return 0;
 }
