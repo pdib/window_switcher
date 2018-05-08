@@ -13,10 +13,14 @@
 #include <Shlwapi.h>
 #include <shellapi.h>
 
+constexpr auto c_W_KEY = 0x5A;
+constexpr auto c_OVERLAY_WNDCLASS_NAME = "window_switcher_overlay_wndclass";
 constexpr unsigned int c_NOTIFY_ICON_MESSAGE = WM_APP + 0x0001;
 constexpr unsigned int c_MENU_ITEM_QUIT = 0x0001;
 
+std::thread g_overlay_window_thread;
 HMENU g_notify_icon_context_menu = nullptr;
+HWND g_overlay_hwnd = nullptr;
 HWND g_edit_hwnd = nullptr;
 HWND g_list_box_hwnd = nullptr;
 
@@ -194,6 +198,16 @@ NotifyIconPtr CreateNotifyIcon(HWND message_window)
     return icon_data_ptr;
 }
 
+void CloseOverlayWindow()
+{
+    DestroyWindow(g_overlay_hwnd);
+    DestroyWindow(g_edit_hwnd);
+    DestroyWindow(g_list_box_hwnd);
+    g_edit_hwnd = nullptr;
+    g_list_box_hwnd = nullptr;
+    g_overlay_hwnd = nullptr;
+}
+
 void RunThreadMessageLoop()
 {
     bool isRunning = true;
@@ -207,6 +221,40 @@ void RunThreadMessageLoop()
             {
                 isRunning = false;
             }
+            
+            if (message.message == WM_KEYDOWN)
+            {
+                switch (message.wParam)
+                {
+                case VK_ESCAPE:
+                {
+                    CloseOverlayWindow();
+                } break;
+                case VK_DOWN:
+                {
+                    int window_count = ListBox_GetCount(g_list_box_hwnd);
+                    int current_selection = ListBox_GetCurSel(g_list_box_hwnd);
+                    int next_item = min(current_selection + 1, window_count);
+                    ListBox_SetCurSel(g_list_box_hwnd, next_item);
+                } break;
+                case VK_UP:
+                {
+                    int current_selection = ListBox_GetCurSel(g_list_box_hwnd);
+                    int next_item = max(current_selection - 1, 0);
+                    ListBox_SetCurSel(g_list_box_hwnd, next_item);
+                } break;
+                case VK_RETURN:
+                {
+                    int current_selection = ListBox_GetCurSel(g_list_box_hwnd);
+                    auto target_hwnd = (HWND)ListBox_GetItemData(g_list_box_hwnd, current_selection);
+                    if (target_hwnd)
+                    {
+                        ShowWindow(target_hwnd, SW_SHOWNORMAL);
+                        SwitchToThisWindow(target_hwnd, false /*fUnknown*/);
+                    }
+                } break;
+                }
+            }
 
             TranslateMessage(&message);
             DispatchMessage(&message);
@@ -217,9 +265,7 @@ void RunThreadMessageLoop()
 void AddItemToListBox(HWND list_box_hwnd, window_process_info const & wpi)
 {
     auto list_item = ListBox_AddString(list_box_hwnd, (wpi.process_name + " - " + wpi.window_title).c_str());
-
-    // TODO: This is just wrong: we shouldn't attach the local &wpi to the item.
-    ListBox_SetItemData(list_box_hwnd, list_item, (LPVOID)&wpi);
+    ListBox_SetItemData(list_box_hwnd, list_item, (LPVOID)wpi.hwnd);
 }
 
 void ClearAndDisplayWindowList(HWND list_box_hwnd, char * query)
@@ -250,6 +296,97 @@ void ClearAndDisplayWindowList(HWND list_box_hwnd, char * query)
     ListBox_SetCurSel(list_box_hwnd, 0);
 }
 
+LRESULT OverlayWindowProc(
+    _In_ HWND hWnd,
+    _In_ UINT msg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam)
+{
+    if (msg == WM_COMMAND)
+    {
+        if (lParam != 0 && (HWND)lParam == g_edit_hwnd)
+        {
+            // Edit control notifications.
+            switch (HIWORD(wParam))
+            {
+            case EN_KILLFOCUS:
+            {
+                CloseOverlayWindow();
+            } break;
+            case EN_CHANGE:
+            {
+                char input[100];
+                ZeroMemory(input, std::size(input));
+                Edit_GetText(g_edit_hwnd, input, static_cast<int>(std::size(input)));
+                ClearAndDisplayWindowList(g_list_box_hwnd, input);
+            } break;
+            default:
+            {
+                return DefWindowProc(hWnd, msg, wParam, lParam);
+            }
+            }
+        }
+        else if (lParam != 0 && (HWND)lParam == g_list_box_hwnd)
+        {
+        }
+    }
+    else if (msg == WM_DESTROY)
+    {
+        PostQuitMessage(0);
+    }
+
+    return DefWindowProc(hWnd, msg, wParam, lParam);
+}
+
+void CreateOverlayWindow()
+{
+    g_overlay_hwnd = CreateWindow(
+        c_OVERLAY_WNDCLASS_NAME,
+        "",
+        WS_VISIBLE,
+        100,
+        150,
+        350,
+        20,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr);
+
+    g_list_box_hwnd = CreateWindow(
+        "ListBox",
+        "",
+        WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE,
+        100,
+        170,
+        350,
+        400,
+        g_overlay_hwnd,
+        nullptr,
+        nullptr,
+        nullptr);
+
+    g_edit_hwnd = CreateWindow(
+        "Edit",
+        "",
+        ES_LEFT | WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE,
+        100,
+        150,
+        350,
+        20,
+        g_overlay_hwnd,
+        nullptr,
+        nullptr,
+        nullptr);
+
+    SetForegroundWindow(g_edit_hwnd);
+    SetFocus(g_edit_hwnd);
+
+    char query[] = "";
+    ClearAndDisplayWindowList(g_list_box_hwnd, query);
+
+}
+
 LRESULT MessageWindowProc(
     _In_ HWND hWnd,
     _In_ UINT msg,
@@ -258,51 +395,23 @@ LRESULT MessageWindowProc(
 {
     if (msg == WM_HOTKEY)
     {
-        if (HIWORD(lParam) == 0x5A && LOWORD(lParam) == (MOD_WIN | MOD_ALT))
+        if (HIWORD(lParam) == c_W_KEY && LOWORD(lParam) == (MOD_WIN | MOD_ALT))
         {
-            if (g_list_box_hwnd)
+            CloseOverlayWindow();
+
+            auto endlife_thread = std::move(g_overlay_window_thread);
+
+            g_overlay_window_thread = std::thread([]
             {
-                DestroyWindow(g_list_box_hwnd);
-            }
+                CreateOverlayWindow();
+                RunThreadMessageLoop();
+            });
 
-            if (g_edit_hwnd)
+            // We just created a new window, we should wait for the wind down of the previous one if any.
+            if (endlife_thread.joinable())
             {
-                DestroyWindow(g_edit_hwnd);
+                endlife_thread.join();
             }
-
-            g_edit_hwnd = CreateWindow(
-                "Edit",
-                "",
-                ES_LEFT | WS_BORDER | WS_POPUPWINDOW,
-                100,
-                150,
-                350,
-                20,
-                hWnd,
-                nullptr,
-                nullptr,
-                nullptr);
-
-            g_list_box_hwnd = CreateWindow(
-                "ListBox",
-                "",
-                WS_BORDER | WS_POPUPWINDOW,
-                100,
-                170,
-                350,
-                400,
-                hWnd,
-                nullptr,
-                nullptr,
-                nullptr);
-
-            ShowWindow(g_list_box_hwnd, SW_SHOW);
-            ShowWindow(g_edit_hwnd, SW_SHOW);
-            SetFocus(g_edit_hwnd);
-            SetForegroundWindow(g_edit_hwnd);
-
-            char query[] = "";
-            ClearAndDisplayWindowList(g_list_box_hwnd, query);
 
             return 0;
         }
@@ -330,35 +439,7 @@ LRESULT MessageWindowProc(
     }
     else if (msg == WM_COMMAND)
     {
-        if (lParam != 0 && (HWND)lParam == g_edit_hwnd)
-        {
-            // Edit control notifications.
-            switch (HIWORD(wParam))
-            {
-            case EN_KILLFOCUS:
-            {
-                DestroyWindow(g_edit_hwnd);
-                DestroyWindow(g_list_box_hwnd);
-                g_edit_hwnd = nullptr;
-                g_list_box_hwnd = nullptr;
-            } break;
-            case EN_CHANGE:
-            {
-                char input[100];
-                ZeroMemory(input, std::size(input));
-                Edit_GetText(g_edit_hwnd, input, static_cast<int>(std::size(input)));
-                ClearAndDisplayWindowList(g_list_box_hwnd, input);
-            } break;
-            default:
-            {
-                return DefWindowProc(hWnd, msg, wParam, lParam);
-            }
-            }
-        }
-        else if (lParam != 0 && (HWND)lParam == g_list_box_hwnd)
-        {
-        }
-        else if (HIWORD(wParam) == 0)
+        if (HIWORD(wParam) == 0)
         {
             // Notifications from the NotifyIcon menu.
             if (LOWORD(wParam) == c_MENU_ITEM_QUIT)
@@ -394,6 +475,17 @@ int __stdcall WinMain(
         return GetLastError();
     }
 
+    WNDCLASSEX overlay_wnd_class = {};
+    overlay_wnd_class.cbSize = sizeof(WNDCLASSEX);
+    overlay_wnd_class.lpfnWndProc = OverlayWindowProc;
+    overlay_wnd_class.hInstance = hInstance;
+    overlay_wnd_class.lpszClassName = c_OVERLAY_WNDCLASS_NAME;
+
+    if (!RegisterClassEx(&overlay_wnd_class))
+    {
+        return GetLastError();
+    }
+
     g_notify_icon_context_menu = CreatePopupMenu();
     if (!AppendMenu(
         g_notify_icon_context_menu,
@@ -424,7 +516,7 @@ int __stdcall WinMain(
         message_window,
         0,
         MOD_WIN | MOD_ALT,
-        0x5A /*w key*/))
+        c_W_KEY /*w key*/))
     {
         return GetLastError();
     }
