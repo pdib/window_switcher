@@ -18,6 +18,7 @@ constexpr unsigned int c_MENU_ITEM_QUIT = 0x0001;
 
 HMENU g_notify_icon_context_menu = nullptr;
 HWND g_edit_hwnd = nullptr;
+HWND g_list_box_hwnd = nullptr;
 
 struct get_visible_windows_data
 {
@@ -102,9 +103,9 @@ std::vector<size_t> QueryWindows(std::string & query, std::vector<window_process
         // Make all the stuff lower case
         auto window_title = wpi.window_title;
         auto process_name = wpi.process_name;
-        std::transform(begin(window_title), end(window_title), begin(window_title), [](unsigned char c) { return std::tolower(c); });
-        std::transform(begin(process_name), end(process_name), begin(process_name), [](unsigned char c) { return std::tolower(c); });
-        std::transform(begin(query), end(query), begin(query), [](unsigned char c) { return std::tolower(c); });
+        std::transform(begin(window_title), end(window_title), begin(window_title), [](int c) { return static_cast<char>(std::tolower(c)); });
+        std::transform(begin(process_name), end(process_name), begin(process_name), [](int c) { return static_cast<char>(std::tolower(c)); });
+        std::transform(begin(query), end(query), begin(query), [](int c) { return static_cast<char>(std::tolower(c)); });
 
         // find word in window title or process name
         if (window_title.find(query) != std::string::npos || process_name.find(query) != std::string::npos)
@@ -126,64 +127,31 @@ void QueryWindows(char* wholeQuery, std::vector<window_process_info> const& wpis
     char* next_token = nullptr;
     // Split query into words.
     // Do a matching pass for each word.
-    std::string token = strtok_s(wholeQuery, " ", &next_token);
-    while (!token.empty())
+    auto token_ptr = strtok_s(wholeQuery, " ", &next_token);
+    if (token_ptr)
     {
-        auto indices = QueryWindows(token, wpis);
-        for (auto idx : indices)
+        std::string token(token_ptr);
+        while (!token.empty())
         {
-            if (std::find(begin(matching_indices), end(matching_indices), idx) == end(matching_indices))
+            auto indices = QueryWindows(token, wpis);
+            for (auto idx : indices)
             {
-                matching_indices.push_back(idx);
+                if (std::find(begin(matching_indices), end(matching_indices), idx) == end(matching_indices))
+                {
+                    matching_indices.push_back(idx);
+                }
+            }
+            auto next = strtok_s(nullptr, " ", &next_token);
+            if (next)
+            {
+                token = std::string(next);
+            }
+            else
+            {
+                token.clear();
             }
         }
-        auto next = strtok_s(nullptr, " ", &next_token);
-        if (next)
-        {
-            token = std::string(next);
-        }
-        else
-        {
-            token.clear();
-        }
     }
-}
-
-// Main action for the window_switcher program:
-// - List all running windows
-// - Filter the list based on user query
-// - Switch to the selected window
-void InvokeWindowSwitcher()
-{
-    auto hwnds = GetVisibleWindows();
-    auto wpis = PopulateWindowInformation(hwnds);
-
-    std::vector<size_t> matching_indices;
-    while (matching_indices.empty())
-    {
-        char query[100];
-        std::cin >> query;
-
-        QueryWindows(query, wpis, matching_indices);
-    }
-
-    for (int index = 0; index < matching_indices.size(); ++index)
-    {
-        auto wpi = wpis[matching_indices[index]];
-        std::cout
-            << index
-            << ": ["
-            << wpi.pid
-            << "] "
-            << wpi.window_title
-            << " - "
-            << wpi.process_name
-            << std::endl;
-    }
-
-    int val;
-    std::cin >> val;
-    SwitchToThisWindow(hwnds[matching_indices[val]], false);
 }
 
 void RemoveNotifyIcon(NOTIFYICONDATA* p)
@@ -246,6 +214,42 @@ void RunThreadMessageLoop()
     }
 }
 
+void AddItemToListBox(HWND list_box_hwnd, window_process_info const & wpi)
+{
+    auto list_item = ListBox_AddString(list_box_hwnd, (wpi.process_name + " - " + wpi.window_title).c_str());
+
+    // TODO: This is just wrong: we shouldn't attach the local &wpi to the item.
+    ListBox_SetItemData(list_box_hwnd, list_item, (LPVOID)&wpi);
+}
+
+void ClearAndDisplayWindowList(HWND list_box_hwnd, char * query)
+{
+    // Populate the list box
+    auto hwnds = GetVisibleWindows();
+    auto wpis = PopulateWindowInformation(hwnds);
+
+    std::vector<size_t> matching_indices;
+    QueryWindows(query, wpis, matching_indices);
+
+    ListBox_ResetContent(list_box_hwnd);
+    if (matching_indices.empty())
+    {
+        for (auto const & wpi : wpis)
+        {
+            AddItemToListBox(list_box_hwnd, wpi);
+        }
+    }
+    else
+    {
+        for (int index = 0; index < matching_indices.size(); ++index)
+        {
+            auto const& wpi = wpis[matching_indices[index]];
+            AddItemToListBox(list_box_hwnd, wpi);
+        }
+    }
+    ListBox_SetCurSel(list_box_hwnd, 0);
+}
+
 LRESULT MessageWindowProc(
     _In_ HWND hWnd,
     _In_ UINT msg,
@@ -256,6 +260,11 @@ LRESULT MessageWindowProc(
     {
         if (HIWORD(lParam) == 0x5A && LOWORD(lParam) == (MOD_WIN | MOD_ALT))
         {
+            if (g_list_box_hwnd)
+            {
+                DestroyWindow(g_list_box_hwnd);
+            }
+
             if (g_edit_hwnd)
             {
                 DestroyWindow(g_edit_hwnd);
@@ -264,7 +273,7 @@ LRESULT MessageWindowProc(
             g_edit_hwnd = CreateWindow(
                 "Edit",
                 "",
-                WS_VISIBLE | ES_LEFT | WS_BORDER | WS_POPUPWINDOW,
+                ES_LEFT | WS_BORDER | WS_POPUPWINDOW,
                 100,
                 150,
                 350,
@@ -274,8 +283,26 @@ LRESULT MessageWindowProc(
                 nullptr,
                 nullptr);
 
+            g_list_box_hwnd = CreateWindow(
+                "ListBox",
+                "",
+                WS_BORDER | WS_POPUPWINDOW,
+                100,
+                170,
+                350,
+                400,
+                hWnd,
+                nullptr,
+                nullptr,
+                nullptr);
+
+            ShowWindow(g_list_box_hwnd, SW_SHOW);
+            ShowWindow(g_edit_hwnd, SW_SHOW);
             SetFocus(g_edit_hwnd);
             SetForegroundWindow(g_edit_hwnd);
+
+            char query[] = "";
+            ClearAndDisplayWindowList(g_list_box_hwnd, query);
 
             return 0;
         }
@@ -306,11 +333,30 @@ LRESULT MessageWindowProc(
         if (lParam != 0 && (HWND)lParam == g_edit_hwnd)
         {
             // Edit control notifications.
-            if (HIWORD(wParam) == EN_KILLFOCUS)
+            switch (HIWORD(wParam))
+            {
+            case EN_KILLFOCUS:
             {
                 DestroyWindow(g_edit_hwnd);
+                DestroyWindow(g_list_box_hwnd);
                 g_edit_hwnd = nullptr;
+                g_list_box_hwnd = nullptr;
+            } break;
+            case EN_CHANGE:
+            {
+                char input[100];
+                ZeroMemory(input, std::size(input));
+                Edit_GetText(g_edit_hwnd, input, static_cast<int>(std::size(input)));
+                ClearAndDisplayWindowList(g_list_box_hwnd, input);
+            } break;
+            default:
+            {
+                return DefWindowProc(hWnd, msg, wParam, lParam);
             }
+            }
+        }
+        else if (lParam != 0 && (HWND)lParam == g_list_box_hwnd)
+        {
         }
         else if (HIWORD(wParam) == 0)
         {
@@ -333,17 +379,17 @@ LRESULT MessageWindowProc(
 
 int __stdcall WinMain(
     HINSTANCE hInstance,
-    HINSTANCE hPrevInstance,
-    LPSTR lpCmdLine,
-    int nCmdShow)
+    HINSTANCE /*hPrevInstance*/,
+    LPSTR /*lpCmdLine*/,
+    int /*nCmdShow*/)
 {
-    WNDCLASSEX wnd_class = {};
-    wnd_class.cbSize = sizeof(WNDCLASSEX);
-    wnd_class.lpfnWndProc = MessageWindowProc;
-    wnd_class.hInstance = hInstance;
-    wnd_class.lpszClassName = "window_switcher_wndclass";
+    WNDCLASSEX message_wnd_class = {};
+    message_wnd_class.cbSize = sizeof(WNDCLASSEX);
+    message_wnd_class.lpfnWndProc = MessageWindowProc;
+    message_wnd_class.hInstance = hInstance;
+    message_wnd_class.lpszClassName = "window_switcher_wndclass";
 
-    if (!RegisterClassEx(&wnd_class))
+    if (!RegisterClassEx(&message_wnd_class))
     {
         return GetLastError();
     }
@@ -360,7 +406,7 @@ int __stdcall WinMain(
 
     HWND message_window = CreateWindowEx(
         0 /*dwExStyle*/,
-        wnd_class.lpszClassName,
+        message_wnd_class.lpszClassName,
         nullptr,
         0 /*dwStyle*/,
         0 /*x*/,
