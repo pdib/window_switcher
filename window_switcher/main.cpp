@@ -523,5 +523,14 @@ int __stdcall WinMain(
 
     RunThreadMessageLoop();
 
+    auto endlife_thread = std::move(g_overlay_window_thread);
+    
+    // We're about to go down, we need to wait for all threads to exit before we do.
+    if (endlife_thread.joinable())
+    {
+        endlife_thread.join();
+    }
+
+
     return 0;
 }
