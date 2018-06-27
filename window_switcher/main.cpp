@@ -16,6 +16,7 @@
 constexpr auto c_W_KEY = 0x5A;
 constexpr auto c_OVERLAY_WNDCLASS_NAME = "window_switcher_overlay_wndclass";
 constexpr unsigned int c_NOTIFY_ICON_MESSAGE = WM_APP + 0x0001;
+constexpr unsigned int c_CLOSE_OVERLAY_WINDOW_MESSAGE = WM_APP + 0x0002;
 constexpr unsigned int c_MENU_ITEM_QUIT = 0x0001;
 
 std::thread g_overlay_window_thread;
@@ -198,7 +199,7 @@ NotifyIconPtr CreateNotifyIcon(HWND message_window)
     return icon_data_ptr;
 }
 
-void CloseOverlayWindow()
+void CloseOverlayWindowFromOwnThread()
 {
     DestroyWindow(g_overlay_hwnd);
     DestroyWindow(g_edit_hwnd);
@@ -206,6 +207,14 @@ void CloseOverlayWindow()
     g_edit_hwnd = nullptr;
     g_list_box_hwnd = nullptr;
     g_overlay_hwnd = nullptr;
+}
+
+// DestroyWindow cannot destroy a window created by a different thread.
+// To destroy the window, we first send a custom message to it.
+// The window will destroy itself upon receiving the message.
+void SendCloseOverlayWindowMessage()
+{
+    SendMessage(g_overlay_hwnd, c_CLOSE_OVERLAY_WINDOW_MESSAGE, 0 /*wParam*/, 0 /*lParam*/);
 }
 
 void RunMainLoop()
@@ -236,6 +245,9 @@ void RunOverlayWindowThreadLoop()
 
         // Deliberately listen to all messages destined to the thread. Not only a specific window's messages.
         // This allows us to get messages for the windows that are composing the overlay windows (e.g. edit_hwnd, list_box_hwnd).
+        //
+        // Messages that are destined to the overlay window are transmitted through this loop but they shouldn't be handled here.
+        // They should be handled in the dedicated OverlayWindowProc.
         if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE))
         {
             if (message.message == WM_QUIT)
@@ -249,7 +261,7 @@ void RunOverlayWindowThreadLoop()
                 {
                 case VK_ESCAPE:
                 {
-                    CloseOverlayWindow();
+                    CloseOverlayWindowFromOwnThread();
                 } break;
                 case VK_DOWN:
                 {
@@ -331,7 +343,7 @@ LRESULT OverlayWindowProc(
             {
             case EN_KILLFOCUS:
             {
-                CloseOverlayWindow();
+                CloseOverlayWindowFromOwnThread();
             } break;
             case EN_CHANGE:
             {
@@ -349,6 +361,10 @@ LRESULT OverlayWindowProc(
         else if (lParam != 0 && (HWND)lParam == g_list_box_hwnd)
         {
         }
+    }
+    else if (msg == c_CLOSE_OVERLAY_WINDOW_MESSAGE)
+    {
+        CloseOverlayWindowFromOwnThread();
     }
     else if (msg == WM_DESTROY)
     {
@@ -417,7 +433,7 @@ LRESULT MessageWindowProc(
     {
         if (HIWORD(lParam) == c_W_KEY && LOWORD(lParam) == (MOD_WIN | MOD_ALT))
         {
-            CloseOverlayWindow();
+            SendCloseOverlayWindowMessage();
 
             auto endlife_thread = std::move(g_overlay_window_thread);
 
