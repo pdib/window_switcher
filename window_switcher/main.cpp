@@ -208,20 +208,41 @@ void CloseOverlayWindow()
     g_overlay_hwnd = nullptr;
 }
 
-void RunThreadMessageLoop()
+void RunMainLoop()
 {
     bool isRunning = true;
     while (isRunning)
     {
         MSG message;
-        // Deliberately listen to all messages destined to the thread. Not only a specific window's messages.
         if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE))
         {
             if (message.message == WM_QUIT)
             {
                 isRunning = false;
             }
-            
+
+            TranslateMessage(&message);
+            DispatchMessage(&message);
+        }
+    }
+}
+
+void RunOverlayWindowThreadLoop()
+{
+    bool isRunning = true;
+    while (isRunning)
+    {
+        MSG message;
+
+        // Deliberately listen to all messages destined to the thread. Not only a specific window's messages.
+        // This allows us to get messages for the windows that are composing the overlay windows (e.g. edit_hwnd, list_box_hwnd).
+        if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (message.message == WM_QUIT)
+            {
+                isRunning = false;
+            }
+
             if (message.message == WM_KEYDOWN)
             {
                 switch (message.wParam)
@@ -249,8 +270,7 @@ void RunThreadMessageLoop()
                     auto target_hwnd = (HWND)ListBox_GetItemData(g_list_box_hwnd, current_selection);
                     if (target_hwnd)
                     {
-                        ShowWindow(target_hwnd, SW_SHOWNORMAL);
-                        SwitchToThisWindow(target_hwnd, false /*fUnknown*/);
+                        SetForegroundWindow(target_hwnd);
                     }
                 } break;
                 }
@@ -404,7 +424,7 @@ LRESULT MessageWindowProc(
             g_overlay_window_thread = std::thread([]
             {
                 CreateOverlayWindow();
-                RunThreadMessageLoop();
+                RunOverlayWindowThreadLoop();
             });
 
             // We just created a new window, we should wait for the wind down of the previous one if any.
@@ -521,7 +541,7 @@ int __stdcall WinMain(
         return GetLastError();
     }
 
-    RunThreadMessageLoop();
+    RunMainLoop();
 
     auto endlife_thread = std::move(g_overlay_window_thread);
     
