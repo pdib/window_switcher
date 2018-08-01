@@ -289,6 +289,10 @@ void RunOverlayWindowThreadLoop()
                     auto target_hwnd = (HWND)ListBox_GetItemData(g_list_box_hwnd, current_selection);
                     if (target_hwnd)
                     {
+                        if (IsIconic(target_hwnd))
+                        {
+                            SendMessage(target_hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+                        }
                         SetForegroundWindow(target_hwnd);
                     }
                 } break;
