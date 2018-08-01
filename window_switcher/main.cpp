@@ -54,8 +54,15 @@ struct window_process_info
 BOOL __stdcall EnumWindowsProc(HWND hwnd, LPARAM lparam)
 {
     auto& hwnds = reinterpret_cast<get_visible_windows_data*>(lparam)->hwnds;
-    auto style = GetWindowLong(hwnd, GWL_STYLE);
-    if (IsWindowVisible(hwnd) && (style & WS_GROUP))
+    auto style = GetWindowLongPtr(hwnd, GWL_STYLE);
+    auto parent_hwnd = GetWindowLongPtr(hwnd, GWLP_HWNDPARENT);
+
+    if (!parent_hwnd &&
+        IsWindow(hwnd) &&
+        IsWindowVisible(hwnd) &&
+        IsWindowEnabled(hwnd) &&
+        (style & WS_OVERLAPPEDWINDOW) && 
+        !(style & WS_POPUP))
     {
         hwnds.push_back(hwnd);
     }
@@ -420,7 +427,6 @@ void CreateOverlayWindow()
 
     char query[] = "";
     ClearAndDisplayWindowList(g_list_box_hwnd, query);
-
 }
 
 LRESULT MessageWindowProc(
@@ -566,7 +572,6 @@ int __stdcall WinMain(
     {
         endlife_thread.join();
     }
-
 
     return 0;
 }
