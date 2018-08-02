@@ -387,14 +387,30 @@ LRESULT OverlayWindowProc(
 
 void CreateOverlayWindow()
 {
-    g_overlay_hwnd = CreateWindow(
+    constexpr int desired_width = 350;
+    constexpr int desired_height = 420;
+    constexpr int edit_height = 20;
+    constexpr int list_box_height = desired_height - edit_height;
+    static_assert(list_box_height > 0, "Overlay window isn't tall enough to fit all components.");
+
+    RECT desktop_rect; 
+    GetWindowRect(GetDesktopWindow(), &desktop_rect);
+
+    int screen_center_x = desktop_rect.left / 2 + desktop_rect.right / 2;
+    int screen_center_y = desktop_rect.top / 2 + desktop_rect.bottom / 2;
+
+    int overlay_window_top_left_x = screen_center_x - desired_width / 2;
+    int overlay_window_top_left_y = screen_center_y - desired_height / 2;
+
+    g_overlay_hwnd = CreateWindowEx(
+        WS_EX_TOOLWINDOW,
         c_OVERLAY_WNDCLASS_NAME,
         "",
         WS_VISIBLE,
-        100,
-        150,
-        350,
-        20,
+        overlay_window_top_left_x,
+        overlay_window_top_left_y,
+        desired_width,
+        desired_height,
         nullptr,
         nullptr,
         nullptr,
@@ -404,10 +420,10 @@ void CreateOverlayWindow()
         "ListBox",
         "",
         WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE,
-        100,
-        170,
-        350,
-        400,
+        overlay_window_top_left_x,
+        overlay_window_top_left_y + edit_height,
+        desired_width,
+        desired_height,
         g_overlay_hwnd,
         nullptr,
         nullptr,
@@ -417,10 +433,10 @@ void CreateOverlayWindow()
         "Edit",
         "",
         ES_LEFT | WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE,
-        100,
-        150,
-        350,
-        20,
+        overlay_window_top_left_x,
+        overlay_window_top_left_y,
+        desired_width,
+        edit_height,
         g_overlay_hwnd,
         nullptr,
         nullptr,
