@@ -325,7 +325,10 @@ void ClearAndDisplayWindowList(HWND list_box_hwnd, char * query)
     {
         for (auto const & wpi : wpis)
         {
-            AddItemToListBox(list_box_hwnd, wpi);
+            if (wpi.hwnd != g_overlay_hwnd)
+            {
+                AddItemToListBox(list_box_hwnd, wpi);
+            }
         }
     }
     else
@@ -333,10 +336,22 @@ void ClearAndDisplayWindowList(HWND list_box_hwnd, char * query)
         for (int index = 0; index < matching_indices.size(); ++index)
         {
             auto const& wpi = wpis[matching_indices[index]];
-            AddItemToListBox(list_box_hwnd, wpi);
+            if (wpi.hwnd != g_overlay_hwnd)
+            {
+                AddItemToListBox(list_box_hwnd, wpi);
+            }
         }
     }
-    ListBox_SetCurSel(list_box_hwnd, 0);
+
+    int initial_selection_index = 0;
+    // We got an empty query. In that case, we start by selecting the second item
+    // in the list. This enables a behavior similar to Alt-Tab (focusing the most
+    // recently active window).
+    if (query[0] == 0) {
+        initial_selection_index = 1;
+    }
+
+    ListBox_SetCurSel(list_box_hwnd, initial_selection_index);
 }
 
 LRESULT OverlayWindowProc(
