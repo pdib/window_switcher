@@ -15,15 +15,25 @@
 
 constexpr auto c_W_KEY = 0x5A;
 constexpr auto c_OVERLAY_WNDCLASS_NAME = "window_switcher_overlay_wndclass";
+constexpr auto c_MIRROR_WNDCLASS_NAME = "window_switcher_mirror_wndclass";
 constexpr unsigned int c_NOTIFY_ICON_MESSAGE = WM_APP + 0x0001;
 constexpr unsigned int c_CLOSE_OVERLAY_WINDOW_MESSAGE = WM_APP + 0x0002;
 constexpr unsigned int c_MENU_ITEM_QUIT = 0x0001;
 
 std::thread g_overlay_window_thread;
 HMENU g_notify_icon_context_menu = nullptr;
+
+// Overlay window is the parent window invoked when pressing the main keyboard shortcut.
 HWND g_overlay_hwnd = nullptr;
+
+// Edit window, child of overlay window.
 HWND g_edit_hwnd = nullptr;
+
+// List box window, child of overlay window.
 HWND g_list_box_hwnd = nullptr;
+
+// Mirror window, replicates the display of the currently selected item in List box. Child of overlay window.
+HWND g_mirror_hwnd = nullptr;
 
 struct get_visible_windows_data
 {
@@ -61,7 +71,7 @@ BOOL __stdcall EnumWindowsProc(HWND hwnd, LPARAM lparam)
         IsWindow(hwnd) &&
         IsWindowVisible(hwnd) &&
         IsWindowEnabled(hwnd) &&
-        (style & WS_OVERLAPPEDWINDOW) && 
+        (style & WS_OVERLAPPEDWINDOW) &&
         !(style & WS_POPUP))
     {
         hwnds.push_back(hwnd);
@@ -211,9 +221,11 @@ void CloseOverlayWindowFromOwnThread()
     DestroyWindow(g_overlay_hwnd);
     DestroyWindow(g_edit_hwnd);
     DestroyWindow(g_list_box_hwnd);
+    DestroyWindow(g_mirror_hwnd);
     g_edit_hwnd = nullptr;
     g_list_box_hwnd = nullptr;
     g_overlay_hwnd = nullptr;
+    g_mirror_hwnd = nullptr;
 }
 
 // DestroyWindow cannot destroy a window created by a different thread.
@@ -243,6 +255,20 @@ void RunMainLoop()
     }
 }
 
+void SendCurrentlySelectedWindowToForeground()
+{
+    int current_selection = ListBox_GetCurSel(g_list_box_hwnd);
+    auto target_hwnd = (HWND)ListBox_GetItemData(g_list_box_hwnd, current_selection);
+    if (target_hwnd)
+    {
+        if (IsIconic(target_hwnd))
+        {
+            SendMessage(target_hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+        }
+        SetForegroundWindow(target_hwnd);
+    }
+}
+
 void RunOverlayWindowThreadLoop()
 {
     bool isRunning = true;
@@ -262,6 +288,7 @@ void RunOverlayWindowThreadLoop()
                 isRunning = false;
             }
 
+            // Listen to all keydown events, regardless of which window they're destined to.
             if (message.message == WM_KEYDOWN)
             {
                 switch (message.wParam)
@@ -285,18 +312,17 @@ void RunOverlayWindowThreadLoop()
                 } break;
                 case VK_RETURN:
                 {
-                    int current_selection = ListBox_GetCurSel(g_list_box_hwnd);
-                    auto target_hwnd = (HWND)ListBox_GetItemData(g_list_box_hwnd, current_selection);
-                    if (target_hwnd)
-                    {
-                        if (IsIconic(target_hwnd))
-                        {
-                            SendMessage(target_hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
-                        }
-                        SetForegroundWindow(target_hwnd);
-                    }
+                    SendCurrentlySelectedWindowToForeground();
+                    CloseOverlayWindowFromOwnThread();
                 } break;
                 }
+            }
+
+            // Clicking on an item in the ListBox is the same as hitting the Return key.
+            if (message.message == WM_LBUTTONUP && message.hwnd == g_list_box_hwnd)
+            {
+                SendCurrentlySelectedWindowToForeground();
+                CloseOverlayWindowFromOwnThread();
             }
 
             TranslateMessage(&message);
@@ -347,11 +373,30 @@ void ClearAndDisplayWindowList(HWND list_box_hwnd, char * query)
     // We got an empty query. In that case, we start by selecting the second item
     // in the list. This enables a behavior similar to Alt-Tab (focusing the most
     // recently active window).
-    if (query[0] == 0) {
+    if (query[0] == 0) 
+    {
         initial_selection_index = 1;
     }
 
     ListBox_SetCurSel(list_box_hwnd, initial_selection_index);
+}
+
+LRESULT MirrorWindowProc(
+    _In_ HWND hWnd,
+    _In_ UINT msg,
+    _In_ WPARAM wParam,
+    _In_ LPARAM lParam)
+{
+    switch (msg) {
+    case WM_PAINT:
+    {
+        PAINTSTRUCT paint_struct;
+        BeginPaint(hWnd, &paint_struct);
+
+        EndPaint(hWnd, &paint_struct);
+    } break;
+    }
+    return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
 LRESULT OverlayWindowProc(
@@ -360,17 +405,19 @@ LRESULT OverlayWindowProc(
     _In_ WPARAM wParam,
     _In_ LPARAM lParam)
 {
+#ifdef DEBUG
+    char log_buffer[200];
+    sprintf_s(log_buffer, "Hwnd: %p - Message %lx - wParam %zx - lParam %zx\n", hWnd, (uint32_t)msg, (size_t)wParam, (size_t)lParam);
+    OutputDebugString(log_buffer);
+#endif
+
     if (msg == WM_COMMAND)
     {
         if (lParam != 0 && (HWND)lParam == g_edit_hwnd)
         {
-            // Edit control notifications.
+            // Edit window notifications.
             switch (HIWORD(wParam))
             {
-            case EN_KILLFOCUS:
-            {
-                CloseOverlayWindowFromOwnThread();
-            } break;
             case EN_CHANGE:
             {
                 char input[100];
@@ -386,10 +433,27 @@ LRESULT OverlayWindowProc(
         }
         else if (lParam != 0 && (HWND)lParam == g_list_box_hwnd)
         {
+            // List box window notifications
+            switch (HIWORD(wParam))
+            {
+            case LBN_SELCHANGE:
+            {
+                SendCurrentlySelectedWindowToForeground();
+            } break;
+            default:
+            {
+                return DefWindowProc(hWnd, msg, wParam, lParam);
+            }
+            }
         }
     }
     else if (msg == c_CLOSE_OVERLAY_WINDOW_MESSAGE)
     {
+        CloseOverlayWindowFromOwnThread();
+    }
+    else if (msg == WM_ACTIVATEAPP && !wParam)
+    {
+        // This closes the overlay window whenever it loses focus.
         CloseOverlayWindowFromOwnThread();
     }
     else if (msg == WM_DESTROY)
@@ -402,13 +466,17 @@ LRESULT OverlayWindowProc(
 
 void CreateOverlayWindow()
 {
-    constexpr int desired_width = 350;
+    constexpr int desired_width = 900;
     constexpr int desired_height = 420;
     constexpr int edit_height = 20;
+    constexpr int edit_width = 350;
+    constexpr int mirror_width = desired_width - edit_width;
     constexpr int list_box_height = desired_height - edit_height;
-    static_assert(list_box_height > 0, "Overlay window isn't tall enough to fit all components.");
 
-    RECT desktop_rect; 
+    static_assert(list_box_height > 0, "Overlay window isn't tall enough to fit all components.");
+    static_assert(mirror_width > 0, "Overlay window isn't wide enough to fit all components.");
+
+    RECT desktop_rect;
     GetWindowRect(GetDesktopWindow(), &desktop_rect);
 
     int screen_center_x = desktop_rect.left / 2 + desktop_rect.right / 2;
@@ -424,8 +492,8 @@ void CreateOverlayWindow()
         WS_VISIBLE,
         overlay_window_top_left_x,
         overlay_window_top_left_y,
-        desired_width,
-        desired_height,
+        0,
+        0,
         nullptr,
         nullptr,
         nullptr,
@@ -437,8 +505,8 @@ void CreateOverlayWindow()
         WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE,
         overlay_window_top_left_x,
         overlay_window_top_left_y + edit_height,
-        desired_width,
-        desired_height,
+        edit_width,
+        list_box_height,
         g_overlay_hwnd,
         nullptr,
         nullptr,
@@ -450,8 +518,21 @@ void CreateOverlayWindow()
         ES_LEFT | WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE,
         overlay_window_top_left_x,
         overlay_window_top_left_y,
-        desired_width,
+        edit_width,
         edit_height,
+        g_overlay_hwnd,
+        nullptr,
+        nullptr,
+        nullptr);
+
+    g_mirror_hwnd = CreateWindow(
+        c_MIRROR_WNDCLASS_NAME,
+        "",
+        WS_BORDER | WS_CHILD | WS_VISIBLE,
+        overlay_window_top_left_x + edit_width,
+        overlay_window_top_left_y,
+        mirror_width,
+        desired_height,
         g_overlay_hwnd,
         nullptr,
         nullptr,
@@ -563,6 +644,17 @@ int __stdcall WinMain(
         return GetLastError();
     }
 
+    WNDCLASSEX mirror_wnd_class = {};
+    mirror_wnd_class.cbSize = sizeof(WNDCLASSEX);
+    mirror_wnd_class.lpfnWndProc = MirrorWindowProc;
+    mirror_wnd_class.hInstance = hInstance;
+    mirror_wnd_class.lpszClassName = c_MIRROR_WNDCLASS_NAME;
+
+    if (!RegisterClassEx(&mirror_wnd_class))
+    {
+        return GetLastError();
+    }
+
     g_notify_icon_context_menu = CreatePopupMenu();
     if (!AppendMenu(
         g_notify_icon_context_menu,
@@ -601,7 +693,7 @@ int __stdcall WinMain(
     RunMainLoop();
 
     auto endlife_thread = std::move(g_overlay_window_thread);
-    
+
     // We're about to go down, we need to wait for all threads to exit before we do.
     if (endlife_thread.joinable())
     {
