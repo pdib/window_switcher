@@ -255,10 +255,15 @@ void RunMainLoop()
     }
 }
 
-void SendCurrentlySelectedWindowToForeground()
+HWND GetCurrentlySelectedHwnd()
 {
     int current_selection = ListBox_GetCurSel(g_list_box_hwnd);
-    auto target_hwnd = (HWND)ListBox_GetItemData(g_list_box_hwnd, current_selection);
+    return (HWND)ListBox_GetItemData(g_list_box_hwnd, current_selection);
+}
+
+void SendCurrentlySelectedWindowToForeground()
+{
+    auto target_hwnd = GetCurrentlySelectedHwnd();
     if (target_hwnd)
     {
         if (IsIconic(target_hwnd))
@@ -316,6 +321,7 @@ void RunOverlayWindowThreadLoop()
                     CloseOverlayWindowFromOwnThread();
                 } break;
                 }
+                RedrawWindow(g_mirror_hwnd, 0, 0, RDW_INVALIDATE | RDW_UPDATENOW);
             }
 
             // Clicking on an item in the ListBox is the same as hitting the Return key.
@@ -373,7 +379,7 @@ void ClearAndDisplayWindowList(HWND list_box_hwnd, char * query)
     // We got an empty query. In that case, we start by selecting the second item
     // in the list. This enables a behavior similar to Alt-Tab (focusing the most
     // recently active window).
-    if (query[0] == 0) 
+    if (query[0] == 0)
     {
         initial_selection_index = 1;
     }
@@ -393,6 +399,54 @@ LRESULT MirrorWindowProc(
         PAINTSTRUCT paint_struct;
         BeginPaint(hWnd, &paint_struct);
 
+        // TODO(padib): Work in progress to display an image of the
+        // currently selected window.
+        auto source_hwnd = GetCurrentlySelectedHwnd();
+        auto source_dc = GetWindowDC(source_hwnd);
+        RECT source_rect;
+        GetWindowRect(source_hwnd, &source_rect);
+        if (source_dc)
+        {
+            auto dest_dc = CreateCompatibleDC(source_dc);
+            auto bitmap = CreateCompatibleBitmap(
+                source_dc, 
+                source_rect.right - source_rect.left, 
+                source_rect.bottom - source_rect.top);
+            SelectObject(dest_dc, bitmap);
+            BitBlt(
+                dest_dc,
+                source_rect.left,
+                source_rect.top,
+                source_rect.right,
+                source_rect.bottom,
+                source_dc,
+                source_rect.left,
+                source_rect.top,
+                SRCCOPY);
+            SetStretchBltMode(paint_struct.hdc, STRETCH_HALFTONE);
+            SetBrushOrgEx(paint_struct.hdc, 0, 0, NULL);
+            if (!StretchBlt(
+                paint_struct.hdc,
+                paint_struct.rcPaint.left,
+                paint_struct.rcPaint.top,
+                paint_struct.rcPaint.right,
+                paint_struct.rcPaint.bottom,
+                dest_dc,
+                source_rect.left,
+                source_rect.top,
+                source_rect.right,
+                source_rect.bottom,
+                SRCCOPY)) {
+                OutputDebugString("huh");
+            }
+            ReleaseDC(source_hwnd, source_dc);
+            ReleaseDC(NULL, dest_dc);
+        }
+        else
+        {
+            static auto s_brush = CreateSolidBrush(RGB(255, 0, 0));
+            FillRect(paint_struct.hdc, &paint_struct.rcPaint, s_brush);
+        }
         EndPaint(hWnd, &paint_struct);
     } break;
     }
@@ -502,7 +556,7 @@ void CreateOverlayWindow()
     g_list_box_hwnd = CreateWindow(
         "ListBox",
         "",
-        WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE,
+        WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE | LBS_NOINTEGRALHEIGHT,
         overlay_window_top_left_x,
         overlay_window_top_left_y + edit_height,
         edit_width,
@@ -528,7 +582,7 @@ void CreateOverlayWindow()
     g_mirror_hwnd = CreateWindow(
         c_MIRROR_WNDCLASS_NAME,
         "",
-        WS_BORDER | WS_CHILD | WS_VISIBLE,
+        WS_BORDER | WS_POPUPWINDOW | WS_CHILD | WS_VISIBLE,
         overlay_window_top_left_x + edit_width,
         overlay_window_top_left_y,
         mirror_width,
