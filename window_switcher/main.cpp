@@ -417,18 +417,25 @@ LRESULT MirrorWindowProc(
         // Choose the lowest ratio (choosing the highest won't fit the other dimension in the dest window).
         float ratio = min(width_ratio, height_ratio);
 
-        // If we don't have to reduce the source window size (i.e if dest_width > source_width && dest_height > source_height)
-        // then keep the original window size.
-        ratio = min(ratio, 1.f);
+        RECT dest_rect = available_rect;
+        // TODO(padib): This is a poor detection for minimized window. Minimized's windows thumbnails 
+        // don't have the same ratio as the maximized version. Current workaround is to use all |available_rect|
+        // instead of computing |dest_rect| based on the ratio.
+        // A better workaround would be to scale the minimized window using the screen's aspect ratio (or better, find
+        // the non-minimized window ratio).
+        if (ratio < 3.f)
+        {
+            // If we don't have to reduce the source window size then keep the original window size.
+            ratio = min(ratio, 1.f);
 
-        // Fit the destination rectangle in the available rectangle so that it is centered.
-        int needed_width = static_cast<int>((source_rect.right - source_rect.left) * ratio);
-        int needed_height = static_cast<int>((source_rect.bottom - source_rect.top) * ratio);
-        RECT dest_rect = {};
-        dest_rect.left = ((available_rect.right - available_rect.left) - needed_width) / 2;
-        dest_rect.right = dest_rect.left + needed_width;
-        dest_rect.top = ((available_rect.bottom - available_rect.top) - needed_height) / 2;
-        dest_rect.bottom = dest_rect.top + needed_height;
+            // Fit the destination rectangle in the available rectangle so that it is centered.
+            int needed_width = static_cast<int>((source_rect.right - source_rect.left) * ratio);
+            int needed_height = static_cast<int>((source_rect.bottom - source_rect.top) * ratio);
+            dest_rect.left = ((available_rect.right - available_rect.left) - needed_width) / 2;
+            dest_rect.right = dest_rect.left + needed_width;
+            dest_rect.top = ((available_rect.bottom - available_rect.top) - needed_height) / 2;
+            dest_rect.bottom = dest_rect.top + needed_height;
+        }
 
         static HTHUMBNAIL thumbnail_id = NULL;
 
