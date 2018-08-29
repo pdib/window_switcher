@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <Windowsx.h>
+#include <dwmapi.h>
 #include <memory>
 #include <algorithm>
 #include <Psapi.h>
@@ -399,54 +400,59 @@ LRESULT MirrorWindowProc(
         PAINTSTRUCT paint_struct;
         BeginPaint(hWnd, &paint_struct);
 
-        // TODO(padib): Work in progress to display an image of the
-        // currently selected window.
+        static auto s_brush = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(paint_struct.hdc, &paint_struct.rcPaint, s_brush);
+
         auto source_hwnd = GetCurrentlySelectedHwnd();
-        auto source_dc = GetWindowDC(source_hwnd);
+
+        // Get destination rectangle by scaling the source rectangle to the 
+        // current window client rect.
         RECT source_rect;
         GetWindowRect(source_hwnd, &source_rect);
-        if (source_dc)
+        RECT available_rect;
+        GetClientRect(hWnd, &available_rect);
+        float width_ratio = static_cast<float>(available_rect.right - available_rect.left) / static_cast<float>(source_rect.right - source_rect.left);
+        float height_ratio = static_cast<float>(available_rect.bottom - available_rect.top) / static_cast<float>(source_rect.bottom - source_rect.top);
+
+        // Choose the lowest ratio (choosing the highest won't fit the other dimension in the dest window).
+        float ratio = min(width_ratio, height_ratio);
+
+        // If we don't have to reduce the source window size (i.e if dest_width > source_width && dest_height > source_height)
+        // then keep the original window size.
+        ratio = min(ratio, 1.f);
+
+        // Fit the destination rectangle in the available rectangle so that it is centered.
+        int needed_width = (source_rect.right - source_rect.left) * ratio;
+        int needed_height = (source_rect.bottom - source_rect.top) * ratio;
+        RECT dest_rect = {};
+        dest_rect.left = ((available_rect.right - available_rect.left) - needed_width) / 2;
+        dest_rect.right = dest_rect.left + needed_width;
+        dest_rect.top = ((available_rect.bottom - available_rect.top) - needed_height) / 2;
+        dest_rect.bottom = dest_rect.top + needed_height;
+
+        static HTHUMBNAIL thumbnail_id = NULL;
+
+        if (thumbnail_id)
         {
-            auto dest_dc = CreateCompatibleDC(source_dc);
-            auto bitmap = CreateCompatibleBitmap(
-                source_dc, 
-                source_rect.right - source_rect.left, 
-                source_rect.bottom - source_rect.top);
-            SelectObject(dest_dc, bitmap);
-            BitBlt(
-                dest_dc,
-                source_rect.left,
-                source_rect.top,
-                source_rect.right,
-                source_rect.bottom,
-                source_dc,
-                source_rect.left,
-                source_rect.top,
-                SRCCOPY);
-            SetStretchBltMode(paint_struct.hdc, STRETCH_HALFTONE);
-            SetBrushOrgEx(paint_struct.hdc, 0, 0, NULL);
-            if (!StretchBlt(
-                paint_struct.hdc,
-                paint_struct.rcPaint.left,
-                paint_struct.rcPaint.top,
-                paint_struct.rcPaint.right,
-                paint_struct.rcPaint.bottom,
-                dest_dc,
-                source_rect.left,
-                source_rect.top,
-                source_rect.right,
-                source_rect.bottom,
-                SRCCOPY)) {
-                OutputDebugString("huh");
-            }
-            ReleaseDC(source_hwnd, source_dc);
-            ReleaseDC(NULL, dest_dc);
+            DwmUnregisterThumbnail(thumbnail_id);
         }
-        else
+
+        // Register and update the thumbnail using Desktop Window Manager APIs.
+        // This allows us to display a thumbnail of the currently selected HWND in g_mirror_hwnd, 
+        // just like the ALT+TAB window does.
+        if (SUCCEEDED(DwmRegisterThumbnail(hWnd, source_hwnd, &thumbnail_id)))
         {
-            static auto s_brush = CreateSolidBrush(RGB(255, 0, 0));
-            FillRect(paint_struct.hdc, &paint_struct.rcPaint, s_brush);
+            // Set the thumbnail properties for use
+            DWM_THUMBNAIL_PROPERTIES thumbnail_properties;
+            thumbnail_properties.dwFlags = DWM_TNP_SOURCECLIENTAREAONLY | DWM_TNP_VISIBLE | DWM_TNP_RECTDESTINATION;
+            thumbnail_properties.fSourceClientAreaOnly = FALSE;
+            thumbnail_properties.fVisible = TRUE;
+            thumbnail_properties.rcDestination = dest_rect;
+
+            // Display the thumbnail
+            DwmUpdateThumbnailProperties(thumbnail_id, &thumbnail_properties);
         }
+
         EndPaint(hWnd, &paint_struct);
     } break;
     }
