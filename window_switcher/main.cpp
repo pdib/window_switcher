@@ -422,8 +422,8 @@ LRESULT MirrorWindowProc(
         ratio = min(ratio, 1.f);
 
         // Fit the destination rectangle in the available rectangle so that it is centered.
-        int needed_width = (source_rect.right - source_rect.left) * ratio;
-        int needed_height = (source_rect.bottom - source_rect.top) * ratio;
+        int needed_width = static_cast<int>((source_rect.right - source_rect.left) * ratio);
+        int needed_height = static_cast<int>((source_rect.bottom - source_rect.top) * ratio);
         RECT dest_rect = {};
         dest_rect.left = ((available_rect.right - available_rect.left) - needed_width) / 2;
         dest_rect.right = dest_rect.left + needed_width;
