@@ -237,22 +237,14 @@ void SendCloseOverlayWindowMessage()
     SendMessage(g_overlay_hwnd, c_CLOSE_OVERLAY_WINDOW_MESSAGE, 0 /*wParam*/, 0 /*lParam*/);
 }
 
-void RunMainLoop()
+void RunMainLoop(HWND message_window)
 {
     bool isRunning = true;
-    while (isRunning)
+    MSG message;
+    while (GetMessage(&message, nullptr, 0, 0))
     {
-        MSG message;
-        if (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE))
-        {
-            if (message.message == WM_QUIT)
-            {
-                isRunning = false;
-            }
-
-            TranslateMessage(&message);
-            DispatchMessage(&message);
-        }
+        TranslateMessage(&message);
+        DispatchMessage(&message);
     }
 }
 
@@ -757,7 +749,7 @@ int __stdcall WinMain(
         return GetLastError();
     }
 
-    RunMainLoop();
+    RunMainLoop(message_window);
 
     auto endlife_thread = std::move(g_overlay_window_thread);
 
